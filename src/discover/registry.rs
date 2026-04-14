@@ -809,8 +809,11 @@ fn rewrite_grep(cmd_clean: &str, env_prefix: &str, redirect_suffix: &str) -> Opt
                 "--max-count" => {
                     return None; // conflicts with RTK -m
                 }
-                _ if tok.starts_with("--color") || tok.starts_with("--colour") => {
+                "--color" | "--colour" => {
                     // strip — rtk strips ANSI
+                }
+                _ if tok.starts_with("--color=") || tok.starts_with("--colour=") => {
+                    // strip — rtk strips ANSI (--color=always, --color=auto, etc.)
                 }
                 _ if tok.starts_with("--include=") => {
                     let glob = &tok["--include=".len()..];
@@ -3315,5 +3318,20 @@ mod tests {
         assert_eq!(rewrite_command("grep --file patterns.txt /path", &[]), None);
         assert_eq!(rewrite_command("grep --include *.go /path", &[]), None);
         assert_eq!(rewrite_command("grep --exclude *.tmp /path", &[]), None);
+    }
+
+    #[test]
+    fn test_rewrite_grep_passthrough_v_flag() {
+        // -v (invert-match) is one of the most common grep flags
+        assert_eq!(
+            rewrite_command("grep -v pattern /path", &[]),
+            Some("rtk grep pattern /path -- -v".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_grep_bare_no_args() {
+        // Bare "grep" with no arguments — skip rewrite
+        assert_eq!(rewrite_command("grep", &[]), None);
     }
 }
