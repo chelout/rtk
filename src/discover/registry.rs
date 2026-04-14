@@ -709,6 +709,26 @@ fn strip_word_prefix<'a>(cmd: &'a str, prefix: &str) -> Option<&'a str> {
     }
 }
 
+/// Re-quote a token for safe shell execution.
+/// Tokens that contain only shell-safe characters are returned as-is.
+/// All others are wrapped in single quotes with internal `'` escaped.
+///
+/// Note: `~` and `\` are intentionally NOT in the safe set — single-quoting
+/// prevents tilde expansion and backslash interpretation in unquoted context.
+#[allow(dead_code)] // used by rewrite_grep() added in the next commit
+fn shell_quote(s: &str) -> String {
+    if s.is_empty() {
+        return "''".to_string();
+    }
+    if s.chars().all(|c| {
+        c.is_ascii_alphanumeric()
+            || matches!(c, '-' | '.' | '_' | '/' | ':' | '=' | '@' | '%' | '+')
+    }) {
+        return s.to_string();
+    }
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::report::RtkStatus;
@@ -2722,5 +2742,57 @@ mod tests {
             split_command_chain("git log $(git rev-parse HEAD~1)"),
             vec!["git log $(git rev-parse HEAD~1)"]
         );
+    }
+
+    // --- shell_quote ---
+
+    #[test]
+    fn test_shell_quote_safe_chars() {
+        assert_eq!(shell_quote("pattern"), "pattern");
+        assert_eq!(shell_quote("src/main.rs"), "src/main.rs");
+        assert_eq!(shell_quote("/Users/chelout/code"), "/Users/chelout/code");
+        assert_eq!(shell_quote("-A"), "-A");
+        assert_eq!(shell_quote("3"), "3");
+    }
+
+    #[test]
+    fn test_shell_quote_glob() {
+        // * triggers quoting (prevents shell glob expansion)
+        assert_eq!(shell_quote("--glob=*.go"), "'--glob=*.go'");
+    }
+
+    #[test]
+    fn test_shell_quote_pipe() {
+        assert_eq!(
+            shell_quote("GetProduct|GetWidgetID"),
+            "'GetProduct|GetWidgetID'"
+        );
+    }
+
+    #[test]
+    fn test_shell_quote_spaces() {
+        assert_eq!(shell_quote("hello world"), "'hello world'");
+    }
+
+    #[test]
+    fn test_shell_quote_single_quote() {
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn test_shell_quote_parens() {
+        assert_eq!(shell_quote("^  (test|lint)"), "'^  (test|lint)'");
+    }
+
+    #[test]
+    fn test_shell_quote_empty() {
+        assert_eq!(shell_quote(""), "''");
+    }
+
+    #[test]
+    fn test_shell_quote_backslash() {
+        // Backslash is NOT safe — must be quoted to prevent shell interpretation
+        assert_eq!(shell_quote("data\\.Field"), "'data\\.Field'");
+        assert_eq!(shell_quote("BuildMetadata\\b"), "'BuildMetadata\\b'");
     }
 }
