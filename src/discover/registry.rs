@@ -3,7 +3,7 @@
 use lazy_static::lazy_static;
 use regex::{Regex, RegexSet};
 
-use super::lexer::{tokenize, TokenKind};
+use super::lexer::{shell_split, tokenize, TokenKind};
 use super::rules::{IGNORED_EXACT, IGNORED_PREFIXES, RULES};
 
 /// Result of classifying a command.
@@ -655,6 +655,11 @@ fn rewrite_segment(seg: &str, excluded: &[String]) -> Option<String> {
         return None;
     }
 
+    // Smart rewrite for grep/rg — translate grep flags to rtk grep format
+    if rule.rtk_cmd == "rtk grep" {
+        return rewrite_grep(cmd_clean, env_prefix, redirect_suffix);
+    }
+
     if let Some(parts) = parse_golangci_run_parts(cmd_clean) {
         let rewritten = if parts.global_segment.is_empty() {
             format!("{}rtk golangci-lint {}", env_prefix, parts.run_segment)
@@ -715,7 +720,6 @@ fn strip_word_prefix<'a>(cmd: &'a str, prefix: &str) -> Option<&'a str> {
 ///
 /// Note: `~` and `\` are intentionally NOT in the safe set — single-quoting
 /// prevents tilde expansion and backslash interpretation in unquoted context.
-#[allow(dead_code)] // used by rewrite_grep() added in the next commit
 fn shell_quote(s: &str) -> String {
     if s.is_empty() {
         return "''".to_string();
@@ -727,6 +731,221 @@ fn shell_quote(s: &str) -> String {
         return s.to_string();
     }
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Smart rewrite for grep/rg commands.
+/// Parses grep flags, strips no-ops (e.g. -r, -n), passes through rg-compatible
+/// flags via `--`, and skips rewrite for incompatible modes (e.g. -l, -c).
+/// Returns `Some(rewritten)` on success, `None` to skip rewrite.
+fn rewrite_grep(cmd_clean: &str, env_prefix: &str, redirect_suffix: &str) -> Option<String> {
+    // Strip "grep" or "rg" prefix to get the arguments portion
+    let args_str = if let Some(rest) = strip_word_prefix(cmd_clean, "grep") {
+        rest
+    } else if let Some(rest) = strip_word_prefix(cmd_clean, "rg") {
+        rest
+    } else {
+        return None;
+    };
+
+    // Bare "grep" / "rg" with no arguments — skip
+    if args_str.is_empty() {
+        return None;
+    }
+
+    let tokens = shell_split(args_str);
+    if tokens.is_empty() {
+        return None;
+    }
+
+    // Flags that mean "strip" (no-op for rg)
+    const STRIP_SHORT: &[char] = &['r', 'R', 'n', 'E', 'G', 'P', 'H'];
+    // Flags that mean "skip rewrite entirely"
+    const SKIP_SHORT: &[char] = &['l', 'L', 'c', 'q', 'Z'];
+    // Short flags that take a required value
+    const VALUE_SHORT: &[char] = &['A', 'B', 'C', 'e', 'f', 'm'];
+
+    let mut extra_flags: Vec<String> = Vec::new();
+    let mut pattern: Option<String> = None;
+    let mut paths: Vec<String> = Vec::new();
+    let mut explicit_patterns: Vec<String> = Vec::new(); // from -e
+    let mut past_double_dash = false;
+
+    let mut i = 0;
+    while i < tokens.len() {
+        let tok = &tokens[i];
+
+        // After --, everything is positional
+        if past_double_dash {
+            if pattern.is_none() {
+                pattern = Some(tok.clone());
+            } else {
+                paths.push(tok.clone());
+            }
+            i += 1;
+            continue;
+        }
+
+        if tok == "--" {
+            past_double_dash = true;
+            i += 1;
+            continue;
+        }
+
+        // Long options
+        if tok.starts_with("--") {
+            match tok.as_str() {
+                "--recursive" | "--line-number" | "--extended-regexp" | "--basic-regexp"
+                | "--perl-regexp" | "--with-filename" => {
+                    // strip — no-op for rg
+                }
+                "--files-with-matches"
+                | "--files-without-match"
+                | "--count"
+                | "--quiet"
+                | "--silent"
+                | "--null" => {
+                    return None; // skip rewrite
+                }
+                "--max-count" => {
+                    return None; // conflicts with RTK -m
+                }
+                _ if tok.starts_with("--color") || tok.starts_with("--colour") => {
+                    // strip — rtk strips ANSI
+                }
+                _ if tok.starts_with("--include=") => {
+                    let glob = &tok["--include=".len()..];
+                    extra_flags.push(format!("--glob={}", glob));
+                }
+                _ if tok.starts_with("--exclude=") => {
+                    let glob = &tok["--exclude=".len()..];
+                    extra_flags.push(format!("--glob=!{}", glob));
+                }
+                _ if tok.starts_with("--file=") => {
+                    return None; // -f FILE — skip rewrite
+                }
+                _ if tok.starts_with("--max-count=") => {
+                    return None; // conflicts with RTK -m
+                }
+                "--file" | "--include" | "--exclude" => {
+                    // Space-separated form (without =) — skip rewrite to avoid
+                    // misclassifying the next token as a positional argument
+                    return None;
+                }
+                _ => {
+                    // Unknown long flag — pass through for forward compatibility
+                    extra_flags.push(tok.clone());
+                }
+            }
+            i += 1;
+            continue;
+        }
+
+        // Short options (single or combined)
+        if tok.starts_with('-') && tok.len() > 1 && tok.as_bytes()[1] != b'.' {
+            let chars: Vec<char> = tok[1..].chars().collect();
+            let mut j = 0;
+            while j < chars.len() {
+                let c = chars[j];
+
+                if SKIP_SHORT.contains(&c) {
+                    return None;
+                }
+
+                if STRIP_SHORT.contains(&c) {
+                    j += 1;
+                    continue;
+                }
+
+                if VALUE_SHORT.contains(&c) {
+                    // Value is the rest of this combined flag, or the next token
+                    let value = if j + 1 < chars.len() {
+                        let v: String = chars[j + 1..].iter().collect();
+                        Some(v)
+                    } else if i + 1 < tokens.len() {
+                        i += 1;
+                        Some(tokens[i].clone())
+                    } else {
+                        None
+                    };
+
+                    if c == 'e' {
+                        // -e PATTERN: explicit pattern
+                        if let Some(v) = value {
+                            explicit_patterns.push(v);
+                        }
+                    } else if c == 'f' || c == 'm' {
+                        // -f FILE or -m NUM: skip rewrite
+                        return None;
+                    } else {
+                        // -A, -B, -C: pass through with value
+                        extra_flags.push(format!("-{}", c));
+                        if let Some(v) = value {
+                            extra_flags.push(v);
+                        }
+                    }
+                    break; // rest consumed as value
+                }
+
+                // Unknown short flag — pass through
+                extra_flags.push(format!("-{}", c));
+                j += 1;
+            }
+            i += 1;
+            continue;
+        }
+
+        // Positional argument
+        if pattern.is_none() && explicit_patterns.is_empty() {
+            pattern = Some(tok.clone());
+        } else {
+            paths.push(tok.clone());
+        }
+        i += 1;
+    }
+
+    // Multiple -e patterns: skip rewrite (complex to merge)
+    if explicit_patterns.len() > 1 {
+        return None;
+    }
+
+    // Single -e pattern takes precedence over positional
+    if let Some(ep) = explicit_patterns.into_iter().next() {
+        if let Some(positional) = pattern.take() {
+            // The positional was actually a path, not a pattern
+            paths.insert(0, positional);
+        }
+        pattern = Some(ep);
+    }
+
+    let pattern = pattern?; // No pattern at all — skip rewrite
+    let first_path = if paths.is_empty() {
+        ".".to_string()
+    } else {
+        paths.remove(0)
+    };
+
+    // Build the rewritten command
+    let quoted_pattern = shell_quote(&pattern);
+    let quoted_path = shell_quote(&first_path);
+
+    let has_extras = !extra_flags.is_empty() || !paths.is_empty();
+
+    let mut result = format!("{}rtk grep {} {}", env_prefix, quoted_pattern, quoted_path);
+
+    if has_extras {
+        result.push_str(" --");
+        for flag in &extra_flags {
+            result.push(' ');
+            result.push_str(&shell_quote(flag));
+        }
+        for path in &paths {
+            result.push(' ');
+            result.push_str(&shell_quote(path));
+        }
+    }
+
+    result.push_str(redirect_suffix);
+    Some(result)
 }
 
 #[cfg(test)]
@@ -1259,7 +1478,7 @@ mod tests {
     fn test_rewrite_rg_pattern() {
         assert_eq!(
             rewrite_command("rg \"fn main\"", &[]),
-            Some("rtk grep \"fn main\"".into())
+            Some("rtk grep 'fn main' .".into())
         );
     }
 
@@ -2794,5 +3013,91 @@ mod tests {
         // Backslash is NOT safe — must be quoted to prevent shell interpretation
         assert_eq!(shell_quote("data\\.Field"), "'data\\.Field'");
         assert_eq!(shell_quote("BuildMetadata\\b"), "'BuildMetadata\\b'");
+    }
+
+    // --- rewrite_grep ---
+
+    #[test]
+    fn test_rewrite_grep_strip_r_flag() {
+        assert_eq!(
+            rewrite_command("grep -rn pattern /path", &[]),
+            Some("rtk grep pattern /path".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_grep_strip_rn_combined() {
+        assert_eq!(
+            rewrite_command("grep -rn GetProduct src/", &[]),
+            Some("rtk grep GetProduct src/".into())
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn test_rewrite_grep_strip_E_flag() {
+        assert_eq!(
+            rewrite_command("grep -E pattern file.txt", &[]),
+            Some("rtk grep pattern file.txt".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_grep_passthrough_i() {
+        assert_eq!(
+            rewrite_command("grep -ri pattern /path", &[]),
+            Some("rtk grep pattern /path -- -i".into())
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn test_rewrite_grep_passthrough_A_with_value() {
+        assert_eq!(
+            rewrite_command("grep -rn -A 3 pattern /path", &[]),
+            Some("rtk grep pattern /path -- -A 3".into())
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn test_rewrite_grep_passthrough_B_with_value() {
+        assert_eq!(
+            rewrite_command("grep -B 5 pattern /path", &[]),
+            Some("rtk grep pattern /path -- -B 5".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_grep_skip_l_flag() {
+        // -l conflicts with RTK's --max-len; different output format
+        assert_eq!(rewrite_command("grep -l pattern /path", &[]), None);
+    }
+
+    #[test]
+    fn test_rewrite_grep_skip_c_flag() {
+        // -c conflicts with RTK's --context-only; different output format
+        assert_eq!(rewrite_command("grep -c pattern /path", &[]), None);
+    }
+
+    #[test]
+    fn test_rewrite_grep_skip_q_flag() {
+        assert_eq!(rewrite_command("grep -q pattern /path", &[]), None);
+    }
+
+    #[test]
+    fn test_rewrite_grep_default_path() {
+        assert_eq!(
+            rewrite_command("grep -rn pattern", &[]),
+            Some("rtk grep pattern .".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_grep_bare_pattern_only() {
+        assert_eq!(
+            rewrite_command("grep pattern", &[]),
+            Some("rtk grep pattern .".into())
+        );
     }
 }
