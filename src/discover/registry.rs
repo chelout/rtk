@@ -3100,4 +3100,220 @@ mod tests {
             Some("rtk grep pattern .".into())
         );
     }
+
+    #[test]
+    fn test_rewrite_grep_combined_rin() {
+        // -r strip, -i pass, -n strip
+        assert_eq!(
+            rewrite_command("grep -rin pattern /path", &[]),
+            Some("rtk grep pattern /path -- -i".into())
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn test_rewrite_grep_combined_rnA_with_inline_value() {
+        // -r strip, -n strip, -A takes "3" as value
+        assert_eq!(
+            rewrite_command("grep -rnA3 pattern /path", &[]),
+            Some("rtk grep pattern /path -- -A 3".into())
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn test_rewrite_grep_combined_A_inline_value() {
+        assert_eq!(
+            rewrite_command("grep -A3 pattern /path", &[]),
+            Some("rtk grep pattern /path -- -A 3".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_grep_pipe_in_pattern_quoted() {
+        // Unquoted \| gets shell_split into |, must be re-quoted
+        assert_eq!(
+            rewrite_command(r"grep -rn GetProduct\|GetWidgetID /path", &[]),
+            Some("rtk grep 'GetProduct|GetWidgetID' /path".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_grep_single_quoted_pattern() {
+        assert_eq!(
+            rewrite_command("grep -rn 'Product\\b|Scenario\\b' /path/file.go", &[]),
+            Some("rtk grep 'Product\\b|Scenario\\b' /path/file.go".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_grep_parens_in_pattern() {
+        assert_eq!(
+            rewrite_command("grep -E '^  (test|lint|go)' /path/taskfile.yml", &[]),
+            Some("rtk grep '^  (test|lint|go)' /path/taskfile.yml".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_grep_multiple_paths() {
+        assert_eq!(
+            rewrite_command("grep -rn pattern path1 path2 path3", &[]),
+            Some("rtk grep pattern path1 -- path2 path3".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_grep_multiple_paths_with_flags() {
+        assert_eq!(
+            rewrite_command("grep -rn -A 3 pattern path1 path2", &[]),
+            Some("rtk grep pattern path1 -- -A 3 path2".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_grep_include_to_glob() {
+        assert_eq!(
+            rewrite_command("grep -rn pattern /path --include=*.go", &[]),
+            Some("rtk grep pattern /path -- '--glob=*.go'".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_grep_exclude_to_glob_negated() {
+        assert_eq!(
+            rewrite_command("grep -rn pattern /path --exclude=*.tmp", &[]),
+            Some("rtk grep pattern /path -- '--glob=!*.tmp'".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_grep_explicit_e_pattern() {
+        assert_eq!(
+            rewrite_command("grep -rn -e pattern /path", &[]),
+            Some("rtk grep pattern /path".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_grep_multiple_e_skip() {
+        // Multiple -e patterns: skip rewrite
+        assert_eq!(rewrite_command("grep -e pat1 -e pat2 /path", &[]), None);
+    }
+
+    #[test]
+    fn test_rewrite_grep_skip_m_flag() {
+        // -m conflicts with RTK's --max
+        assert_eq!(rewrite_command("grep -m 5 pattern /path", &[]), None);
+    }
+
+    #[test]
+    fn test_rewrite_grep_skip_f_flag() {
+        assert_eq!(rewrite_command("grep -f patterns.txt /path", &[]), None);
+    }
+
+    #[test]
+    fn test_rewrite_grep_unknown_flag_passthrough() {
+        // Unknown flags go to extra_args for forward compatibility
+        assert_eq!(
+            rewrite_command("grep --some-future-flag pattern /path", &[]),
+            Some("rtk grep pattern /path -- --some-future-flag".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_grep_rg_prefix() {
+        assert_eq!(
+            rewrite_command("rg -i pattern /path", &[]),
+            Some("rtk grep pattern /path -- -i".into())
+        );
+    }
+
+    // --- grep rewrite: regression tests from parse_failures DB ---
+
+    #[test]
+    fn test_rewrite_grep_regression_rn_backslash_pipe_multi_path() {
+        // parse_failures id 314: grep with \| alternation and 3 paths
+        assert_eq!(
+            rewrite_command(
+                r"grep -rn data\.SDKPartnerID\|data\.WidgetID internal/services/kyc/ internal/rest/ internal/domain/kyc/",
+                &[],
+            ),
+            Some("rtk grep 'data.SDKPartnerID|data.WidgetID' internal/services/kyc/ -- internal/rest/ internal/domain/kyc/".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_grep_regression_include_glob() {
+        // parse_failures id 311: grep with --include
+        // shell_split interprets \b as b (strips backslash), so pattern becomes BuildMetadatab
+        assert_eq!(
+            rewrite_command(
+                r"grep -rn BuildMetadata\b /Users/chelout/code/risk/ --include=*.go",
+                &[],
+            ),
+            Some("rtk grep BuildMetadatab /Users/chelout/code/risk/ -- '--glob=*.go'".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_grep_regression_l_flag_skip() {
+        // parse_failures id 297: -l conflicts with RTK
+        assert_eq!(
+            rewrite_command(
+                r"grep -l testify\|require\. /Users/chelout/code/risk/internal/rest/validation/",
+                &[],
+            ),
+            None
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn test_rewrite_grep_regression_E_flag() {
+        // parse_failures id 296: -E extended regex
+        assert_eq!(
+            rewrite_command(
+                "grep -E '^  (test|lint|go)' /Users/chelout/code/risk/taskfile.yml",
+                &[],
+            ),
+            Some("rtk grep '^  (test|lint|go)' /Users/chelout/code/risk/taskfile.yml".into())
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn test_rewrite_grep_regression_B_flag() {
+        // parse_failures: -B context lines
+        assert_eq!(
+            rewrite_command("grep -rn -B 5 pattern /path", &[]),
+            Some("rtk grep pattern /path -- -B 5".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_grep_regression_long_multi_path() {
+        // parse_failures id 306: many individual file paths
+        let cmd = "grep -rn 'package validation' /path/a.go /path/b.go /path/c.go";
+        let result = rewrite_command(cmd, &[]);
+        assert!(result.is_some());
+        let r = result.unwrap();
+        assert!(r.starts_with("rtk grep"));
+        assert!(r.contains("-- /path/b.go /path/c.go"));
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn test_rewrite_grep_skip_Z_flag() {
+        // -Z / --null: machine-readable null-delimited output
+        assert_eq!(rewrite_command("grep -Z pattern /path", &[]), None);
+        assert_eq!(rewrite_command("grep --null pattern /path", &[]), None);
+    }
+
+    #[test]
+    fn test_rewrite_grep_skip_space_separated_file_include() {
+        // Space-separated forms: skip to avoid positional misclassification
+        assert_eq!(rewrite_command("grep --file patterns.txt /path", &[]), None);
+        assert_eq!(rewrite_command("grep --include *.go /path", &[]), None);
+        assert_eq!(rewrite_command("grep --exclude *.tmp /path", &[]), None);
+    }
 }
