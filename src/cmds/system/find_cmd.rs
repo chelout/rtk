@@ -276,16 +276,13 @@ pub fn run(
     files.sort();
 
     let raw_output = files.join("\n");
+    let original_cmd = format!("find {} -name '{}'", path, effective_pattern);
+    let rtk_cmd = build_rtk_cmd(pattern, path, max_depth, file_type, case_insensitive);
 
     if files.is_empty() {
         let msg = format!("0 for '{}'", effective_pattern);
         println!("{}", msg);
-        timer.track(
-            &format!("find {} -name '{}'", path, effective_pattern),
-            "rtk find",
-            &raw_output,
-            &msg,
-        );
+        timer.track(&original_cmd, &rtk_cmd, &raw_output, &msg);
         return Ok(());
     }
 
@@ -374,14 +371,49 @@ pub fn run(
     }
 
     let rtk_output = format!("{}F {}D + {}", total_files, dirs_count, ext_line);
-    timer.track(
-        &format!("find {} -name '{}'", path, effective_pattern),
-        "rtk find",
-        &raw_output,
-        &rtk_output,
-    );
+    timer.track(&original_cmd, &rtk_cmd, &raw_output, &rtk_output);
 
     Ok(())
+}
+
+/// Reconstruct the `rtk find ...` command string for tracking. Mirrors the CLI
+/// flags so history in `rtk gain --history` retains the invocation shape
+/// (pattern, path, -d depth, -t type, -i) rather than collapsing to "rtk find".
+fn build_rtk_cmd(
+    pattern: &str,
+    path: &str,
+    max_depth: Option<usize>,
+    file_type: &str,
+    case_insensitive: bool,
+) -> String {
+    let mut parts = vec!["rtk".to_string(), "find".to_string(), quote_arg(pattern)];
+    if path != "." {
+        parts.push(quote_arg(path));
+    }
+    if let Some(depth) = max_depth {
+        parts.push("-d".to_string());
+        parts.push(depth.to_string());
+    }
+    if !file_type.is_empty() {
+        parts.push("-t".to_string());
+        parts.push(quote_arg(file_type));
+    }
+    if case_insensitive {
+        parts.push("-i".to_string());
+    }
+    parts.join(" ")
+}
+
+/// Shell-quote an argument for readable reconstructed commands.
+fn quote_arg(arg: &str) -> String {
+    let needs_quote = arg.is_empty()
+        || arg
+            .chars()
+            .any(|c| c.is_whitespace() || matches!(c, '|' | '&' | ';' | '<' | '>' | '(' | ')' | '$' | '`' | '\\' | '"' | '\'' | '*' | '?' | '[' | ']' | '#' | '~' | '!'));
+    if !needs_quote {
+        return arg.to_string();
+    }
+    format!("'{}'", arg.replace('\'', "'\\''"))
 }
 
 #[cfg(test)]

@@ -16,6 +16,8 @@ pub fn run(file1: &Path, file2: &Path, verbose: u8) -> Result<()> {
     let content1 = fs::read_to_string(file1)?;
     let content2 = fs::read_to_string(file2)?;
     let raw = format!("{}\n---\n{}", content1, content2);
+    let original_cmd = format!("diff {} {}", file1.display(), file2.display());
+    let rtk_cmd = format!("rtk diff {} {}", file1.display(), file2.display());
 
     let lines1: Vec<&str> = content1.lines().collect();
     let lines2: Vec<&str> = content2.lines().collect();
@@ -25,12 +27,7 @@ pub fn run(file1: &Path, file2: &Path, verbose: u8) -> Result<()> {
     if diff.added == 0 && diff.removed == 0 {
         rtk.push_str("[ok] Files are identical");
         println!("{}", rtk);
-        timer.track(
-            &format!("diff {} {}", file1.display(), file2.display()),
-            "rtk diff",
-            &raw,
-            &rtk,
-        );
+        timer.track(&original_cmd, &rtk_cmd, &raw, &rtk);
         return Ok(());
     }
 
@@ -53,12 +50,7 @@ pub fn run(file1: &Path, file2: &Path, verbose: u8) -> Result<()> {
     }
 
     print!("{}", rtk);
-    timer.track(
-        &format!("diff {} {}", file1.display(), file2.display()),
-        "rtk diff",
-        &raw,
-        &rtk,
-    );
+    timer.track(&original_cmd, &rtk_cmd, &raw, &rtk);
     Ok(())
 }
 

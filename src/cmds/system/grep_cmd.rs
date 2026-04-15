@@ -59,6 +59,8 @@ pub fn run(
     let exit_code = exit_code_from_output(&output, "grep");
 
     let raw_output = stdout.to_string();
+    let rtk_cmd = build_rtk_cmd(pattern, path, context_only, file_type, extra_args);
+    let original_cmd = format!("grep -rn '{}' {}", pattern, path);
 
     if stdout.trim().is_empty() {
         // Show stderr for errors (bad regex, missing file, etc.)
@@ -70,12 +72,7 @@ pub fn run(
         }
         let msg = format!("0 matches for '{}'", pattern);
         println!("{}", msg);
-        timer.track(
-            &format!("grep -rn '{}' {}", pattern, path),
-            "rtk grep",
-            &raw_output,
-            &msg,
-        );
+        timer.track(&original_cmd, &rtk_cmd, &raw_output, &msg);
         return Ok(exit_code);
     }
 
@@ -142,14 +139,49 @@ pub fn run(
     }
 
     print!("{}", rtk_output);
-    timer.track(
-        &format!("grep -rn '{}' {}", pattern, path),
-        "rtk grep",
-        &raw_output,
-        &rtk_output,
-    );
+    timer.track(&original_cmd, &rtk_cmd, &raw_output, &rtk_output);
 
     Ok(exit_code)
+}
+
+/// Reconstruct the full `rtk grep ...` command string for tracking so that
+/// `rtk gain --history` preserves the pattern, path, and flags the user invoked.
+fn build_rtk_cmd(
+    pattern: &str,
+    path: &str,
+    context_only: bool,
+    file_type: Option<&str>,
+    extra_args: &[String],
+) -> String {
+    let mut parts = vec!["rtk".to_string(), "grep".to_string(), quote_arg(pattern)];
+    if path != "." {
+        parts.push(quote_arg(path));
+    }
+    if let Some(ft) = file_type {
+        parts.push("-t".to_string());
+        parts.push(quote_arg(ft));
+    }
+    if context_only {
+        parts.push("-c".to_string());
+    }
+    for arg in extra_args {
+        parts.push(quote_arg(arg));
+    }
+    parts.join(" ")
+}
+
+/// Shell-quote an argument for readable reconstructed commands. Single-quote
+/// wrap anything with whitespace or shell metacharacters; leave plain tokens
+/// alone. Single quotes inside the argument are escaped as `'\''`.
+fn quote_arg(arg: &str) -> String {
+    let needs_quote = arg.is_empty()
+        || arg
+            .chars()
+            .any(|c| c.is_whitespace() || matches!(c, '|' | '&' | ';' | '<' | '>' | '(' | ')' | '$' | '`' | '\\' | '"' | '\'' | '*' | '?' | '[' | ']' | '#' | '~' | '!'));
+    if !needs_quote {
+        return arg.to_string();
+    }
+    format!("'{}'", arg.replace('\'', "'\\''"))
 }
 
 fn clean_line(line: &str, max_len: usize, context_re: Option<&Regex>, pattern: &str) -> String {
