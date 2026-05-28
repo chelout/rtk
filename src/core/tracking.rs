@@ -1423,6 +1423,11 @@ pub fn args_display(args: &[OsString]) -> String {
 mod tests {
     use super::*;
 
+    /// Serializes tests that mutate the process-global `RTK_DB_PATH` env var.
+    /// Rust runs tests in parallel within a binary, so every test touching this
+    /// variable must hold this lock to avoid racing with the others.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     // 1. estimate_tokens — verify ~4 chars/token ratio
     #[test]
     fn test_estimate_tokens() {
@@ -1444,60 +1449,51 @@ mod tests {
         assert_eq!(args_display(&single), "log");
     }
 
-    // 3. Tracker::record + get_recent — round-trip DB
+    // 3. Tracker::record + get_recent — round-trip DB (isolated in-memory)
     #[test]
     fn test_tracker_record_and_recent() {
-        let tracker = Tracker::new().expect("Failed to create tracker");
-
-        // Use unique test identifier to avoid conflicts with other tests
-        let test_cmd = format!("rtk git status test_{}", std::process::id());
+        let tracker = Tracker::new_in_memory().expect("Failed to create in-memory tracker");
 
         tracker
-            .record("git status", &test_cmd, 100, 20, 50)
+            .record("git status", "rtk git status", 100, 20, 50)
             .expect("Failed to record");
 
         let recent = tracker.get_recent(10).expect("Failed to get recent");
 
-        // Find our specific test record
-        let test_record = recent
-            .iter()
-            .find(|r| r.rtk_cmd == test_cmd)
-            .expect("Test record not found in recent commands");
-
+        // Isolation lets us assert the exact contents, not just "find ours".
+        assert_eq!(recent.len(), 1, "isolated DB must hold exactly one record");
+        let test_record = &recent[0];
+        assert_eq!(test_record.rtk_cmd, "rtk git status");
         assert_eq!(test_record.saved_tokens, 80);
         assert_eq!(test_record.savings_pct, 80.0);
     }
 
-    // 4. track_passthrough doesn't dilute stats (input=0, output=0)
+    // 4. track_passthrough doesn't dilute stats (input=0, output=0) — isolated
     #[test]
     fn test_track_passthrough_no_dilution() {
-        let tracker = Tracker::new().expect("Failed to create tracker");
-
-        // Use unique test identifiers
-        let pid = std::process::id();
-        let cmd1 = format!("rtk cmd1_test_{}", pid);
-        let cmd2 = format!("rtk cmd2_passthrough_test_{}", pid);
+        let tracker = Tracker::new_in_memory().expect("Failed to create in-memory tracker");
 
         // Record one real command with 80% savings
         tracker
-            .record("cmd1", &cmd1, 1000, 200, 10)
+            .record("cmd1", "rtk cmd1", 1000, 200, 10)
             .expect("Failed to record cmd1");
 
         // Record passthrough (0, 0)
         tracker
-            .record("cmd2", &cmd2, 0, 0, 5)
+            .record("cmd2", "rtk cmd2", 0, 0, 5)
             .expect("Failed to record passthrough");
 
         // Verify both records exist in recent history
         let recent = tracker.get_recent(20).expect("Failed to get recent");
+        assert_eq!(recent.len(), 2, "isolated DB must hold exactly two records");
 
         let record1 = recent
             .iter()
-            .find(|r| r.rtk_cmd == cmd1)
+            .find(|r| r.rtk_cmd == "rtk cmd1")
             .expect("cmd1 record not found");
         let record2 = recent
             .iter()
-            .find(|r| r.rtk_cmd == cmd2)
+            .find(|r| r.rtk_cmd == "rtk cmd2")
             .expect("passthrough record not found");
 
         // Verify cmd1 has 80% savings
@@ -1513,26 +1509,42 @@ mod tests {
     }
 
     // 5. TimedExecution::track records with exec_time > 0
+    // TimedExecution::track() instantiates Tracker::new() internally, so we
+    // isolate it by pointing RTK_DB_PATH at a throwaway temp DB (lock-guarded).
     #[test]
     fn test_timed_execution_records_time() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::NamedTempFile::new().expect("Failed to create temp DB");
+        std::env::set_var("RTK_DB_PATH", tmp.path());
+
         let timer = TimedExecution::start();
         std::thread::sleep(std::time::Duration::from_millis(10));
         timer.track("test cmd", "rtk test", "raw input data", "filtered");
 
-        // Verify via DB that record exists
-        let tracker = Tracker::new().expect("Failed to create tracker");
-        let recent = tracker.get_recent(5).expect("Failed to get recent");
+        let recent = Tracker::new()
+            .expect("Failed to create tracker")
+            .get_recent(5)
+            .expect("Failed to get recent");
+        std::env::remove_var("RTK_DB_PATH");
+
         assert!(recent.iter().any(|r| r.rtk_cmd == "rtk test"));
     }
 
     // 6. TimedExecution::track_passthrough records with 0 tokens
     #[test]
     fn test_timed_execution_passthrough() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::NamedTempFile::new().expect("Failed to create temp DB");
+        std::env::set_var("RTK_DB_PATH", tmp.path());
+
         let timer = TimedExecution::start();
         timer.track_passthrough("git tag", "rtk git tag (passthrough)");
 
-        let tracker = Tracker::new().expect("Failed to create tracker");
-        let recent = tracker.get_recent(5).expect("Failed to get recent");
+        let recent = Tracker::new()
+            .expect("Failed to create tracker")
+            .get_recent(5)
+            .expect("Failed to get recent");
+        std::env::remove_var("RTK_DB_PATH");
 
         let pt = recent
             .iter()
@@ -1550,16 +1562,14 @@ mod tests {
     #[test]
     fn test_db_path_env_and_default() {
         use std::env;
-        use std::sync::Mutex;
-        static ENV_LOCK: Mutex<()> = Mutex::new(());
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         let custom_path = env::temp_dir().join("rtk_test_custom.db");
         env::set_var("RTK_DB_PATH", &custom_path);
         let db_path = get_db_path().expect("Failed to get db path");
+        env::remove_var("RTK_DB_PATH");
         assert_eq!(db_path, custom_path);
 
-        env::remove_var("RTK_DB_PATH");
         let db_path = get_db_path().expect("Failed to get db path");
         assert!(
             db_path.ends_with("rtk/history.db"),
@@ -1606,45 +1616,53 @@ mod tests {
         );
     }
 
-    // 12. record_parse_failure + get_parse_failure_summary roundtrip
+    // 12. record_parse_failure + get_parse_failure_summary roundtrip (isolated)
     #[test]
     fn test_parse_failure_roundtrip() {
-        let tracker = Tracker::new().expect("Failed to create tracker");
-        let test_cmd = format!("git -C /path status test_{}", std::process::id());
+        let tracker = Tracker::new_in_memory().expect("Failed to create in-memory tracker");
 
         tracker
-            .record_parse_failure(&test_cmd, "unrecognized subcommand", true)
+            .record_parse_failure("git -C /path status", "unrecognized subcommand", true)
             .expect("Failed to record parse failure");
 
         let summary = tracker
             .get_parse_failure_summary()
             .expect("Failed to get summary");
 
-        assert!(summary.total >= 1);
-        assert!(summary.recent.iter().any(|r| r.raw_command == test_cmd));
+        assert_eq!(
+            summary.total, 1,
+            "isolated DB must hold exactly one failure"
+        );
+        assert!(summary
+            .recent
+            .iter()
+            .any(|r| r.raw_command == "git -C /path status"));
     }
 
-    // 13. recovery_rate calculation
+    // 13. recovery_rate calculation (isolated → exact assertion)
     #[test]
     fn test_parse_failure_recovery_rate() {
-        let tracker = Tracker::new().expect("Failed to create tracker");
-        let pid = std::process::id();
+        let tracker = Tracker::new_in_memory().expect("Failed to create in-memory tracker");
 
         // 2 successes, 1 failure
         tracker
-            .record_parse_failure(&format!("cmd_ok1_{}", pid), "err", true)
+            .record_parse_failure("cmd_ok1", "err", true)
             .unwrap();
         tracker
-            .record_parse_failure(&format!("cmd_ok2_{}", pid), "err", true)
+            .record_parse_failure("cmd_ok2", "err", true)
             .unwrap();
         tracker
-            .record_parse_failure(&format!("cmd_fail_{}", pid), "err", false)
+            .record_parse_failure("cmd_fail", "err", false)
             .unwrap();
 
         let summary = tracker.get_parse_failure_summary().unwrap();
-        // We can't assert exact rate because other tests may have added records,
-        // but we can verify recovery_rate is between 0 and 100
-        assert!(summary.recovery_rate >= 0.0 && summary.recovery_rate <= 100.0);
+        assert_eq!(summary.total, 3);
+        // 2 of 3 recovered → 66.67%
+        assert!(
+            (summary.recovery_rate - 66.666_666_67).abs() < 0.01,
+            "expected ~66.67% recovery, got {}",
+            summary.recovery_rate
+        );
     }
 
     #[test]
