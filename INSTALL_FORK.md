@@ -14,7 +14,7 @@ features that are **not** in upstream:
 > | Command | Installs | Has fork features? |
 > | --- | --- | --- |
 > | `brew install rtk` | `homebrew-core` → **upstream** `rtk-ai/rtk` | ❌ no |
-> | `brew install chelout/rtk/rtk` | **this fork** (personal tap) | ✅ yes |
+> | `brew install chelout/tap/rtk` | **this fork** (personal tap) | ✅ yes |
 >
 > They share the binary name `rtk` and **cannot be installed at the same time**.
 > Running `brew upgrade rtk` on the upstream one will **not** give you the fork.
@@ -26,8 +26,8 @@ For the standard/upstream install guide see [`INSTALL.md`](INSTALL.md).
 ## TL;DR — install the fork via the personal tap
 
 ```bash
-brew tap chelout/rtk
-brew install chelout/rtk/rtk
+brew tap chelout/tap
+brew install chelout/tap/rtk
 rtk --version
 ```
 
@@ -43,8 +43,8 @@ There are two ways to run the fork. The Homebrew tap is recommended.
 ### Option 1 — Homebrew tap (recommended)
 
 ```bash
-brew tap chelout/rtk
-brew install chelout/rtk/rtk
+brew tap chelout/tap
+brew install chelout/tap/rtk
 ```
 
 - **macOS arm64** → installs a **prebuilt binary** (no Rust toolchain needed,
@@ -56,7 +56,7 @@ Update later:
 
 ```bash
 brew update
-brew upgrade chelout/rtk/rtk
+brew upgrade chelout/tap/rtk
 ```
 
 ### Option 2 — `cargo install` (build from source)
@@ -90,7 +90,7 @@ toolchain directly:
 ## Switching from an existing `homebrew-core` rtk ⭐
 
 This is the Homebrew case that needs care. Because the upstream formula (`rtk`) and
-the fork formula (`chelout/rtk/rtk`) **share the keg/binary name `rtk`**, they cannot
+the fork formula (`chelout/tap/rtk`) **share the keg/binary name `rtk`**, they cannot
 coexist — you must remove the upstream one, then install the fork.
 
 ### 1. Diagnose your current state
@@ -113,14 +113,14 @@ rm -f "$(brew --prefix)/bin/rtk"         # ONLY if it's a manual symlink you cre
                                          #   (e.g. → ~/.cargo/bin/rtk); brew won't
                                          #   overwrite a link it doesn't own
 brew uninstall rtk                       # remove the homebrew-core keg
-brew tap chelout/rtk
-brew install chelout/rtk/rtk
+brew tap chelout/tap
+brew install chelout/tap/rtk
 hash -r                                  # clear the shell's cached command path
 rtk --version
 ```
 
 After this, `which rtk` → `$(brew --prefix)/bin/rtk` → `…/Cellar/rtk/<ver>/bin/rtk`
-(the fork), and `brew upgrade chelout/rtk/rtk` keeps it current.
+(the fork), and `brew upgrade chelout/tap/rtk` keeps it current.
 
 > **PATH shadowing:** Homebrew links its binary at `$(brew --prefix)/bin/rtk`, which
 > is normally **earlier** in `PATH` than `~/.cargo/bin`. So a stray
@@ -165,7 +165,7 @@ rtk gain                             # token-savings stats (sanity: not "command
 
 ```bash
 brew uninstall rtk        # removes the fork keg (named rtk)
-brew untap chelout/rtk    # optional: drop the tap
+brew untap chelout/tap    # optional: drop the tap
 brew install rtk          # reinstall homebrew-core upstream
 ```
 
@@ -179,7 +179,7 @@ cargo install --git https://github.com/rtk-ai/rtk --force
 
 ## Releasing a new fork version (maintainer)
 
-The tap lives at [`chelout/homebrew-rtk`](https://github.com/chelout/homebrew-rtk)
+The tap lives at [`chelout/homebrew-tap`](https://github.com/chelout/homebrew-tap)
 (`Formula/rtk.rb`). To cut a new release:
 
 ```bash
@@ -196,9 +196,9 @@ shasum -a 256 rtk-aarch64-apple-darwin.tar.gz                 # prebuilt (arm64 
 curl -fsSL https://github.com/chelout/rtk/archive/refs/tags/vX.Y.Z-fork.N.tar.gz \
   | shasum -a 256                                             # source (default url)
 
-# 4. In chelout/homebrew-rtk, bump Formula/rtk.rb: version, both url tags,
+# 4. In chelout/homebrew-tap, bump Formula/rtk.rb: version, both url tags,
 #    both sha256 values. Validate, then commit + push:
-brew style chelout/rtk/rtk && brew audit chelout/rtk/rtk
+brew style chelout/tap/rtk && brew audit chelout/tap/rtk
 ```
 
 ---
@@ -207,9 +207,9 @@ brew style chelout/rtk/rtk && brew audit chelout/rtk/rtk
 
 | Situation | Command |
 | --- | --- |
-| Install the fork (recommended) | `brew tap chelout/rtk && brew install chelout/rtk/rtk` |
-| Update the fork (tap) | `brew update && brew upgrade chelout/rtk/rtk` |
-| Switching from upstream `rtk` | `brew unpin rtk; rm -f "$(brew --prefix)/bin/rtk"; brew uninstall rtk; brew install chelout/rtk/rtk` |
+| Install the fork (recommended) | `brew tap chelout/tap && brew install chelout/tap/rtk` |
+| Update the fork (tap) | `brew update && brew upgrade chelout/tap/rtk` |
+| Switching from upstream `rtk` | `brew unpin rtk; rm -f "$(brew --prefix)/bin/rtk"; brew uninstall rtk; brew install chelout/tap/rtk` |
 | Install the fork (cargo) | `cargo install --path . --force` |
 | Update the fork (cargo) | `git merge upstream/master && cargo install --path . --force` |
 | `cargo` not on PATH | use `~/.rustup/toolchains/<triple>/bin/cargo` |
