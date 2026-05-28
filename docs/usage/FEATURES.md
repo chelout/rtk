@@ -215,11 +215,11 @@ rtk grep <pattern> [chemin] [options]
 |--------|-------|--------|-------------|
 | `--max-len` | `-l` | 80 | Longueur maximale de ligne |
 | `--max` | `-m` | 50 | Nombre maximum de resultats |
-| `--context-only` | `-c` | non | Afficher uniquement le contexte du match |
+| `--context-only` |  | non | Afficher uniquement le contexte du match (pas de raccourci, `-c` est reserve a `grep --count`) |
 | `--file-type` | `-t` | tous | Filtrer par type (ts, py, rust, etc.) |
 | `--line-numbers` | `-n` | oui | Numeros de ligne (toujours actif) |
 
-Les arguments supplementaires sont transmis a `rg` (ripgrep).
+Les arguments supplementaires sont transmis a `rg` (ripgrep). Les flags qui changent le format de sortie (`-c`, `-l`, `-L`, `-o`, `-Z`) passent directement a `rg`/`grep` sans filtrage RTK.
 
 **Economies :** ~80%
 
@@ -576,12 +576,13 @@ Filtre la sortie de `cargo nextest` pour n'afficher que les echecs.
 
 ---
 
-### `rtk vitest run` -- Tests Vitest
+### `rtk jest` / `rtk vitest` -- Tests Jest/Vitest
 
 **Economies :** ~99.5%
 
 ```bash
-rtk vitest run [args...]
+rtk jest [args...]
+rtk vitest [args...]
 ```
 
 ---
@@ -799,7 +800,7 @@ Detecte automatiquement : prettier, black, ruff format, rustfmt. Applique un fil
 |----------|-------------|-----------|
 | `rtk pnpm list [-d N]` | Arbre de dependances compact | ~70% |
 | `rtk pnpm outdated` | Paquets obsoletes : `pkg: old -> new` | ~80% |
-| `rtk pnpm install [pkgs...]` | Filtre les barres de progression | ~60% |
+| `rtk pnpm install` | Filtre les barres de progression | ~60% |
 | `rtk pnpm build` | Delegue au filtre Next.js | ~87% |
 | `rtk pnpm typecheck` | Delegue au filtre tsc | ~83% |
 
@@ -963,13 +964,13 @@ Les lignes repetees sont fusionnees : `[ERROR] Connection refused (x42)`.
 
 ---
 
-### `rtk curl` -- HTTP avec detection JSON
+### `rtk curl` -- HTTP avec troncature
 
 ```bash
 rtk curl [args...]
 ```
 
-Auto-detecte les reponses JSON et affiche le schema au lieu du contenu complet.
+Tronque les reponses longues et sauvegarde la sortie complete dans un fichier pour recuperation.
 
 ---
 
@@ -1258,7 +1259,8 @@ rtk verify
 | `ls` | `rtk ls` |
 | `tree` | `rtk tree` |
 | `wc` | `rtk wc` |
-| `vitest/jest` | `rtk vitest run` |
+| `jest` | `rtk jest` |
+| `vitest` | `rtk vitest` |
 | `tsc` | `rtk tsc` |
 | `eslint/biome` | `rtk lint` |
 | `prettier` | `rtk prettier` |

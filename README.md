@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://github.com/rtk-ai/rtk/actions"><img src="https://github.com/rtk-ai/rtk/workflows/Security%20Check/badge.svg" alt="CI"></a>
   <a href="https://github.com/rtk-ai/rtk/releases"><img src="https://img.shields.io/github/v/release/rtk-ai/rtk" alt="Release"></a>
-  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+  <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License: Apache 2.0"></a>
   <a href="https://discord.gg/RySmvNF5kF"><img src="https://img.shields.io/discord/1470188214710046894?label=Discord&logo=discord" alt="Discord"></a>
   <a href="https://formulae.brew.sh/formula/rtk"><img src="https://img.shields.io/homebrew/v/rtk" alt="Homebrew"></a>
 </p>
@@ -18,7 +18,7 @@
   <a href="https://www.rtk-ai.app">Website</a> &bull;
   <a href="#installation">Install</a> &bull;
   <a href="https://www.rtk-ai.app/guide/troubleshooting">Troubleshooting</a> &bull;
-  <a href="ARCHITECTURE.md">Architecture</a> &bull;
+  <a href="docs/contributing/ARCHITECTURE.md">Architecture</a> &bull;
   <a href="https://discord.gg/RySmvNF5kF">Discord</a>
 </p>
 
@@ -110,12 +110,13 @@ rtk init --agent windsurf       # Windsurf
 rtk init --agent cline          # Cline / Roo Code
 rtk init --agent kilocode       # Kilo Code
 rtk init --agent antigravity    # Google Antigravity
+rtk init --agent hermes         # Hermes
 
 # 2. Restart your AI tool, then test
 git status  # Automatically rewritten to rtk git status
 ```
 
-The hook transparently rewrites Bash commands (e.g., `git status` -> `rtk git status`) before execution. Claude never sees the rewrite, it just gets compressed output.
+Hook-based agents rewrite Bash commands (e.g., `git status` -> `rtk git status`) before execution. Plugin-based agents, including Hermes, use their plugin API to rewrite commands before execution. The agent receives compact output without needing to call `rtk` explicitly.
 
 **Important:** the hook only runs on Bash tool calls. Claude Code built-in tools like `Read`, `Grep`, and `Glob` do not pass through the Bash hook, so they are not auto-rewritten. To get RTK's compact output for those workflows, use shell commands (`cat`/`head`/`tail`, `rg`/`grep`, `find`) or call `rtk read`, `rtk grep`, or `rtk find` directly.
 
@@ -171,15 +172,16 @@ rtk gh run list                 # Workflow run status
 
 ### Test Runners
 ```bash
-rtk test cargo test             # Show failures only (-90%)
-rtk err npm run build           # Errors/warnings only
-rtk vitest run                  # Vitest compact (failures only)
+rtk jest                        # Jest compact (failures only)
+rtk vitest                      # Vitest compact (failures only)
 rtk playwright test             # E2E results (failures only)
 rtk pytest                      # Python tests (-90%)
 rtk go test                     # Go tests (NDJSON, -90%)
 rtk cargo test                  # Cargo tests (-90%)
 rtk rake test                   # Ruby minitest (-90%)
 rtk rspec                       # RSpec tests (JSON, -60%+)
+rtk err <cmd>                   # Filter errors only from any command
+rtk test <cmd>                  # Generic test wrapper - failures only (-90%)
 ```
 
 ### Build & Lint
@@ -234,7 +236,7 @@ rtk json config.json            # Structure without values
 rtk deps                        # Dependencies summary
 rtk env -f AWS                  # Filtered env vars
 rtk log app.log                 # Deduplicated logs
-rtk curl <url>                  # Auto-detect JSON + schema
+rtk curl <url>                  # Truncate + save full output
 rtk wget <url>                  # Download, strip progress bars
 rtk summary <long command>      # Heuristic summary
 rtk proxy <command>             # Raw passthrough + tracking
@@ -349,7 +351,7 @@ rtk git status
 
 ## Supported AI Tools
 
-RTK supports 12 AI coding tools. Each integration transparently rewrites shell commands to `rtk` equivalents for 60-90% token savings.
+RTK supports 13 AI coding tools. Each integration rewrites shell commands to `rtk` equivalents for 60-90% token savings where the agent supports command interception.
 
 | Tool | Install | Method |
 |------|---------|--------|
@@ -363,11 +365,12 @@ RTK supports 12 AI coding tools. Each integration transparently rewrites shell c
 | **Cline / Roo Code** | `rtk init --agent cline` | .clinerules (project-scoped) |
 | **OpenCode** | `rtk init -g --opencode` | Plugin TS (tool.execute.before) |
 | **OpenClaw** | `openclaw plugins install ./openclaw` | Plugin TS (before_tool_call) |
+| **Hermes** | `rtk init --agent hermes` | Python plugin adapter (terminal command mutation via `rtk rewrite`) |
 | **Mistral Vibe** | Planned ([#800](https://github.com/rtk-ai/rtk/issues/800)) | Blocked on upstream |
 | **Kilo Code** | `rtk init --agent kilocode` | .kilocode/rules/rtk-rules.md (project-scoped) |
 | **Google Antigravity** | `rtk init --agent antigravity` | .agents/rules/antigravity-rtk-rules.md (project-scoped) |
 
-For per-agent setup details, override controls, and graceful degradation, see the [Supported Agents guide](https://www.rtk-ai.app/guide/getting-started/supported-agents).
+For per-agent setup details, override controls, and graceful degradation, see the [Supported Agents guide](https://www.rtk-ai.app/guide/getting-started/supported-agents). The Hermes plugin source and tests live in `hooks/hermes/`; installed Hermes runtime files still live under `~/.hermes/plugins/rtk-rewrite/`.
 
 ## Configuration
 
@@ -403,7 +406,7 @@ brew uninstall rtk           # If installed via Homebrew
 
 - **[rtk-ai.app/guide](https://www.rtk-ai.app/guide)** — full user guide (installation, supported agents, what gets optimized, analytics, configuration, troubleshooting)
 - **[INSTALL.md](INSTALL.md)** — detailed installation reference
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — system design and technical decisions
+- **[ARCHITECTURE.md](docs/contributing/ARCHITECTURE.md)** — system design and technical decisions
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — contribution guide
 - **[SECURITY.md](SECURITY.md)** — security policy
 
@@ -463,6 +466,15 @@ export RTK_TELEMETRY_DISABLED=1   # Blocks telemetry regardless of consent
   </picture>
 </a>
 
+## Core team
+
+- **Patrick Szymkowiak** — Founder
+  [GitHub](https://github.com/pszymkowiak) · [LinkedIn](https://www.linkedin.com/in/patrick-szymkowiak/)
+- **Florian Bruniaux** — Core contributor
+  [GitHub](https://github.com/FlorianBruniaux) · [LinkedIn](https://www.linkedin.com/in/florian-bruniaux-43408b83/)
+- **Adrien Eppling** — Core contributor
+  [GitHub](https://github.com/aeppling) · [LinkedIn](https://www.linkedin.com/in/adrien-eppling/)
+
 ## Contributing
 
 Contributions welcome! Please open an issue or PR on [GitHub](https://github.com/rtk-ai/rtk).
@@ -471,7 +483,7 @@ Join the community on [Discord](https://discord.gg/RySmvNF5kF).
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+Apache License 2.0 - see [LICENSE](LICENSE) for details.
 
 ## Disclaimer
 
